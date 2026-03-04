@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -10,7 +12,7 @@ class Config(BaseSettings):
     """Application configuration loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(Path(__file__).parent.parent.parent / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -23,9 +25,10 @@ class Config(BaseSettings):
         default="http://localhost:11434", description="Ollama base URL"
     )
 
-    # LLM Provider Configuration
-    llm_provider: str = Field(default="openai", description="LLM provider: openai | anthropic | ollama")
-    llm_model: str | None = Field(default=None, description="Optional model override")
+    # LLM Model Configuration (per provider)
+    openai_model: str = Field(default="gpt-4o-mini", description="OpenAI model name")
+    anthropic_model: str = Field(default="claude-haiku-4-5", description="Anthropic model name")
+    ollama_model: str = Field(default="llama3.2", description="Ollama model name")
 
     # Vector Store
     qdrant_host: str = Field(default="localhost", description="Qdrant host")
@@ -41,19 +44,6 @@ class Config(BaseSettings):
     semantic_similarity_threshold: float = Field(
         default=0.85, description="Threshold for semantic chunking"
     )
-
-    def get_llm_model_for_provider(self) -> str:
-        """Get the LLM model to use, applying provider defaults if not overridden."""
-        if self.llm_model:
-            return self.llm_model
-
-        # Provider defaults
-        defaults = {
-            "openai": "gpt-4o-mini",
-            "anthropic": "claude-haiku-4-5",
-            "ollama": "llama3.2",
-        }
-        return defaults.get(self.llm_provider, "gpt-4o-mini")
 
 
 # Global config instance
