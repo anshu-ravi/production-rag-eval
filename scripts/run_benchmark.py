@@ -22,12 +22,12 @@ from rag_eval.config import config
 from rag_eval.data.loader import BEIRSciFact
 from rag_eval.evaluation.generation_metrics import compute_generation_metrics
 from rag_eval.evaluation.retrieval_metrics import compute_retrieval_metrics
-from rag_eval.llm import OpenAIProvider, AnthropicProvider, OllamaProvider
+from rag_eval.llm import AnthropicProvider, OllamaProvider, OpenAIProvider
 from rag_eval.pipeline.rag_pipeline import RAGPipeline
+from rag_eval.retrieval.base import RetrievalResult
 from rag_eval.retrieval.dense import DenseRetriever
 from rag_eval.retrieval.hybrid import HybridRetriever
 from rag_eval.retrieval.sparse import SparseRetriever
-from rag_eval.retrieval.base import RetrievalResult
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -181,12 +181,13 @@ def run_retrieval_benchmark(output_path: str, selected_strategies: list[str] | N
     logger.info(f"\nResults saved to {output_path}")
 
 
-def run_llm_comparison(output_path: str, best_strategy: str = "hybrid") -> None:
+def run_llm_comparison(output_path: str, best_strategy: str = "hybrid", providers_to_run: list[str] | None = None) -> None:
     """Run LLM comparison using the best retrieval strategy.
 
     Args:
         output_path: Path to save results JSON.
         best_strategy: Best retrieval strategy to use.
+        providers_to_run: List of provider names to test (openai, anthropic, ollama). If None, tests all available.
     """
     logger.info("Starting LLM comparison benchmark...")
 
@@ -225,51 +226,97 @@ def run_llm_comparison(output_path: str, best_strategy: str = "hybrid") -> None:
 
     retriever.index(chunked_docs)
 
-    # Test different LLM providers
-    providers_config = [
-        ("openai", "gpt-4o-mini", OpenAIProvider),
-        ("anthropic", "claude-haiku-4-5", AnthropicProvider),
-    ]
+    # Build list of available providers (health check filters them)
+    providers_to_test = []
 
-    # Add Ollama if configured
-    if config.ollama_base_url:
-        providers_config.append(("ollama", "llama3.2", OllamaProvider))
+    # Check OpenAI availability
+    if not providers_to_run or "openai" in providers_to_run:
+        if config.openai_api_key:
+            logger.info("Checking OpenAI availability...")
+            try:
+                openai_provider = OpenAIProvider(api_key=config.openai_api_key, model=config.openai_model)
+                if openai_provider.health_check():
+                    providers_to_test.append(("openai", config.openai_model, openai_provider))
+                    logger.info("✓ OpenAI is available")
+                else:
+                    logger.warning("✗ OpenAI health check failed")
+            except Exception as e:
+                logger.warning(f"✗ OpenAI initialization failed: {e}")
+        else:
+            logger.info("OpenAI API key not configured, skipping...")
+
+    # Check Anthropic availability
+    if not providers_to_run or "anthropic" in providers_to_run:
+        if config.anthropic_api_key:
+            logger.info("Checking Anthropic availability...")
+            try:
+                anthropic_provider = AnthropicProvider(api_key=config.anthropic_api_key, model=config.anthropic_model)
+                if anthropic_provider.health_check():
+                    providers_to_test.append(("anthropic", config.anthropic_model, anthropic_provider))
+                    logger.info("✓ Anthropic is available")
+                else:
+                    logger.warning("✗ Anthropic health check failed")
+            except Exception as e:
+                logger.warning(f"✗ Anthropic initialization failed: {e}")
+        else:
+            logger.info("Anthropic API key not configured, skipping...")
+
+    # Check Ollama availability
+    if not providers_to_run or "ollama" in providers_to_run:
+        if config.ollama_base_url:
+            logger.info("Checking Ollama availability...")
+            try:
+                ollama_provider = OllamaProvider(base_url=config.ollama_base_url, model=config.ollama_model)
+                if ollama_provider.health_check():
+                    providers_to_test.append(("ollama", config.ollama_model, ollama_provider))
+                    logger.info("✓ Ollama is available")
+                else:
+                    logger.warning("✗ Ollama service not accessible at " + config.ollama_base_url)
+            except Exception as e:
+                logger.warning(f"✗ Ollama initialization failed: {e}")
+
+    if not providers_to_test:
+        logger.error("No LLM providers are available. Please configure at least one provider.")
+        return
+
+    logger.info(f"\nTesting {len(providers_to_test)} available provider(s)...\n")
 
     results = []
 
-    for provider_name, model_name, provider_class in providers_config:
+    for provider_name, model_name, llm_provider in providers_to_test:
         logger.info(f"\n{'='*60}")
         logger.info(f"Testing provider: {provider_name} / {model_name}")
         logger.info(f"{'='*60}")
-
-        # Create provider instance
-        if provider_name == "openai":
-            if not config.openai_api_key:
-                logger.warning("OpenAI API key not configured, skipping...")
-                continue
-            llm_provider = provider_class(api_key=config.openai_api_key, model=model_name)
-        elif provider_name == "anthropic":
-            if not config.anthropic_api_key:
-                logger.warning("Anthropic API key not configured, skipping...")
-                continue
-            llm_provider = provider_class(api_key=config.anthropic_api_key, model=model_name)
-        elif provider_name == "ollama":
-            llm_provider = provider_class(base_url=config.ollama_base_url, model=model_name)
-        else:
-            continue
 
         # Create RAG pipeline
         rag_pipeline = RAGPipeline(retriever, llm_provider, top_k=config.top_k)
 
         # Run RAG for sampled queries
         rag_results = []
+        failed_queries: list[dict[str, str]] = []
         for query_id, query_text in sampled_queries.items():
             try:
                 result = rag_pipeline.query(query_text)
                 rag_results.append(result)
             except Exception as e:
-                logger.error(f"Error processing query {query_id}: {e}")
-                continue
+                error_info = {
+                    "query_id": query_id,
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                }
+                failed_queries.append(error_info)
+                logger.error(
+                    f"Query {query_id} failed [{type(e).__name__}]: {e}",
+                    exc_info=True,
+                )
+
+        if failed_queries:
+            logger.warning(
+                f"{provider_name}: {len(failed_queries)}/{len(sampled_queries)} queries failed — "
+                f"error breakdown: { {e['error_type']: sum(1 for x in failed_queries if x['error_type'] == e['error_type']) for e in failed_queries} }"
+            )
+            for fq in failed_queries:
+                logger.warning(f"  dropped query {fq['query_id']}: [{fq['error_type']}] {fq['error']}")
 
         if not rag_results:
             logger.warning(f"No results for {provider_name}, skipping evaluation")
@@ -277,7 +324,7 @@ def run_llm_comparison(output_path: str, best_strategy: str = "hybrid") -> None:
 
         # Evaluate generation quality with RAGAS
         try:
-            gen_metrics = compute_generation_metrics(rag_results, llm_provider)
+            gen_metrics = compute_generation_metrics(rag_results, llm_provider, openai_api_key=config.openai_api_key)
 
             result = {
                 "provider": provider_name,
@@ -285,6 +332,7 @@ def run_llm_comparison(output_path: str, best_strategy: str = "hybrid") -> None:
                 "faithfulness": round(gen_metrics.faithfulness, 4),
                 "answer_relevance": round(gen_metrics.answer_relevance, 4),
                 "n_samples": gen_metrics.num_samples,
+                "failed_samples": len(failed_queries),
             }
             results.append(result)
             logger.info(f"Results: {result}")
@@ -363,6 +411,11 @@ def main() -> None:
         type=str,
         help="Comma-separated list of strategies to run (fixed_dense, recursive_dense, hybrid). If not specified, runs all.",
     )
+    parser.add_argument(
+        "--providers",
+        type=str,
+        help="Comma-separated list of LLM providers to test (openai, anthropic, ollama). Only for llm_comparison mode. If not specified, tests all available.",
+    )
 
     args = parser.parse_args()
 
@@ -370,7 +423,8 @@ def main() -> None:
         selected_strategies = args.strategies.split(",") if args.strategies else None
         run_retrieval_benchmark(args.output, selected_strategies)
     elif args.mode == "llm_comparison":
-        run_llm_comparison(args.output)
+        selected_providers = args.providers.split(",") if args.providers else None
+        run_llm_comparison(args.output, providers_to_run=selected_providers)
     elif args.mode == "single":
         if not args.strategy or not args.provider:
             parser.error("--strategy and --provider required for single mode")
