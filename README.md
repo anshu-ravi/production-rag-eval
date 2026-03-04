@@ -213,7 +213,7 @@ The `RAGPipeline` orchestrates retrieval and generation:
 ## Repository Structure
 
 ```
-production-rag-eval/
+rag-eval/
 ├── src/
 │   └── rag_eval/
 │       ├── __init__.py
@@ -340,6 +340,6 @@ If you use this work, please cite:
   title = {production-rag-eval: Rigorous RAG System Evaluation},
   author = {Anshumaan Ravi},
   year = {2026},
-  url = {https://github.com/anshu-ravi/production-rag-eval}
+  url = {https://github.com/anshu-ravi/rag-eval}
 }
 ```
