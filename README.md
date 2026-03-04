@@ -1,6 +1,18 @@
-# production-rag-eval
+# RAG Evaluation
 
-A production-grade RAG (Retrieval-Augmented Generation) system with rigorous evaluation framework, model-agnostic LLM abstraction, and comprehensive benchmark results comparing retrieval strategies and LLM providers.
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)
+![LangChain](https://img.shields.io/badge/LangChain-0.1+-1C3C3C?style=flat&logo=langchain&logoColor=white)
+![OpenAI](https://img.shields.io/badge/OpenAI-API-412991?style=flat&logo=openai&logoColor=white)
+![Anthropic](https://img.shields.io/badge/Anthropic-Claude-CC785C?style=flat&logo=anthropic&logoColor=white)
+![Ollama](https://img.shields.io/badge/Ollama-gemma3:4b-black?style=flat&logo=ollama&logoColor=white)
+![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20Store-DC244C?style=flat&logo=qdrant&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Containerized-2496ED?style=flat&logo=docker&logoColor=white)
+![Poetry](https://img.shields.io/badge/Poetry-Dependency%20Management-60A5FA?style=flat&logo=poetry&logoColor=white)
+![RAGAS](https://img.shields.io/badge/RAGAS-Generation%20Eval-FF6B6B?style=flat)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat)
+
+
+A rigorous evaluation framework for comparing RAG (Retrieval-Augmented Generation) retrieval strategies and LLM providers, built with production engineering practices.
 
 ## Problem Statement
 
@@ -48,7 +60,6 @@ This project addresses these gaps by providing:
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd production-rag-eval
 
 # Install dependencies with Poetry
 poetry install
@@ -103,9 +114,9 @@ python scripts/generate_report.py results/retrieval.json
 
 | Strategy | Chunker | Retriever | MRR@10 | NDCG@10 | Hit Rate@10 | Queries |
 |---|---|---|---|---|---|---|
-| Fixed + Dense | fixed | dense | TBD | TBD | TBD | 300 |
-| Recursive + Dense | recursive | dense | TBD | TBD | TBD | 300 |
-| Hybrid (BM25 + Dense) | recursive | hybrid_rrf | TBD | TBD | TBD | 300 |
+| Fixed + Dense | fixed | dense | 0.6059 | 0.6434 | 0.7933 | 300 |
+| Recursive + Dense | recursive | dense | 0.6285 | 0.6532 | 0.7633 | 300 |
+| Hybrid (BM25 + Dense) | recursive | hybrid_rrf | 0.5454 | 0.5835 | 0.7433 | 300 |
 
 ### LLM Provider Comparison
 
@@ -118,19 +129,44 @@ python scripts/generate_report.py results/llm_comparison.json
 
 | Provider | Model | Faithfulness | Answer Relevance | Samples |
 |---|---|---|---|---|
-| OpenAI | gpt-4o-mini | TBD | TBD | 50 |
-| Anthropic | claude-haiku-4-5 | TBD | TBD | 50 |
-| Ollama | llama3.2 (local) | TBD | TBD | 50 |
+| OpenAI | gpt-5-nano | 0.6466 | 0.5186 | 50 |
+| Anthropic | claude-haiku-4-5 | 0.8523 | 0.2804* | 41 |
+| Ollama | gemma3:4b (local) | 0.7282 | 0.5654 | 50 |
+
+\* See Spot Check Analysis for explanation of low answer relevance score.
 
 ## Key Findings
 
-*Results to be filled in after running benchmarks:*
+1. **Hybrid retrieval does not always win.** Despite combining BM25 and dense retrieval via RRF fusion, hybrid underperformed dense-only strategies on this dataset. SciFact queries are short and precise — hybrid retrieval adds value primarily on longer, ambiguous queries where sparse and dense signals are complementary.
 
-1. **Retrieval Strategy Impact**: [Comparison of strategies on NDCG@10]
-2. **Hybrid vs. Dense-Only**: [Performance gain from RRF fusion]
-3. **LLM Provider Comparison**: [Faithfulness and relevance across providers]
-4. **Cost-Performance Tradeoff**: [Cost per query vs. quality metrics]
-5. **Local vs. Cloud LLMs**: [Ollama performance vs. commercial APIs]
+2. **Faithfulness and answer relevance measure different failure modes.** High faithfulness means the model stays grounded in retrieved context. High answer relevance means the response addresses the question. A model can score high on one and low on the other — Claude-Haiku demonstrates this clearly.
+
+3. **RAGAS penalises calibrated responses.** Claude-Haiku achieved the highest faithfulness (0.85) but lowest answer relevance (0.28). Manual inspection showed this is a scoring artifact: Claude's structured "insufficient evidence" responses generate no evaluable statements, scoring 0.0 on relevance regardless of actual quality. This is a known limitation of LLM-as-judge metrics.
+
+4. **High answer relevance does not equal correctness.** Gemma3:4b scored highest on answer relevance but hallucinated in at least one query — constructing a confident "Yes" answer to a question where the correct response was "insufficient evidence," by stitching together loosely related evidence. Automated metrics rewarded the confident wrong answer over the correct cautious one.
+
+5. **Retrieval failures propagate directly to generation.** Query 1 returned completely irrelevant chunks (rickets, carbon nanotubes) for a question about 0-dimensional biomaterials. All three LLMs correctly identified insufficient context — but all scored 0.0 on answer relevance as a result. Generation quality is bounded by retrieval quality regardless of LLM capability.
+
+## Spot Check Analysis
+
+Automated metrics alone are insufficient to evaluate RAG quality. We manually inspected outputs across 5 queries to validate benchmark findings.
+
+| Query | OpenAI | Anthropic | Gemma |
+|-------|--------|-----------|-------|
+| 0-dim biomaterials | Correct (no info) | Correct (no info) | Correct (no info) |
+| ALDH1 breast cancer | Correct | Correct | Partial (quotes chunk verbatim) |
+| ACE inhibitors | Partially correct | Correct | **Hallucination** |
+| Visual impairment screening | Correct | Correct | Correct (quotes verbatim) |
+| Bone marrow macrophages | Correct | Correct | Partially correct (factual error) |
+
+### Illustrative Example: Gemma Hallucination (Query 3)
+
+**Query:** *Angiotensin converting enzyme inhibitors are associated with increased risk for functional renal insufficiency.*
+
+The correct answer based on retrieved context is "insufficient evidence." OpenAI and Claude both respond accordingly. Gemma constructs a confident "Yes" by stitching together loosely related evidence across documents — ARB hyperkalemia risk, contrast agent nephrotoxicity, and diabetic interactions — none of which directly support the claim. It scores 0.93 on answer relevance despite being wrong.
+
+This is a concrete example of why answer relevance is an unreliable standalone quality signal. Run `scripts/inspect_outputs.py` to reproduce the full output.
+
 
 ## Architecture
 
@@ -213,13 +249,20 @@ production-rag-eval/
 ├── tests/
 │   ├── test_chunking.py           # Chunking strategy tests
 │   ├── test_metrics.py            # Metric implementation tests
+│   ├── test_retrieval.py          # Retrieval strategy tests
 │   └── test_llm_providers.py      # LLM provider tests (mocked)
 ├── scripts/
 │   ├── run_benchmark.py           # Main benchmark runner, saves results to JSON
-│   └── generate_report.py         # Reads JSON results, prints formatted table
+│   ├── generate_report.py         # Reads JSON results, prints formatted table
+│   └── inspect_outputs.py         # Manual spot-check of LLM outputs per query
+├── docs/
+│   ├── prd.md                     # Product requirements document
+│   └── DIAGRAMS.md                # Architecture and flow diagrams
+├── results/                       # Benchmark output JSONs (git-ignored)
 ├── docker-compose.yml             # Qdrant + app services
 ├── Dockerfile                     # App container
 ├── pyproject.toml                 # Poetry dependencies
+├── poetry.lock                    # Locked dependency versions
 ├── .env.example                   # Example environment configuration
 └── README.md
 ```
@@ -234,9 +277,10 @@ OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 OLLAMA_BASE_URL=http://localhost:11434
 
-# LLM Provider
-LLM_PROVIDER=openai           # openai | anthropic | ollama
-LLM_MODEL=gpt-4o-mini         # optional override
+# LLM Model Configuration (per provider)
+OPENAI_MODEL=gpt-4o-mini
+ANTHROPIC_MODEL=claude-haiku-4-5
+OLLAMA_MODEL=llama3.2
 
 # Vector Store
 QDRANT_HOST=localhost
@@ -248,35 +292,6 @@ TOP_K=10
 CHUNK_SIZE=512
 CHUNK_OVERLAP=50
 SEMANTIC_SIMILARITY_THRESHOLD=0.85
-```
-
-## Testing
-
-```bash
-# Run all tests
-pytest tests/ -v
-
-# Run specific test file
-pytest tests/test_metrics.py -v
-
-# Run with coverage
-pytest tests/ --cov=rag_eval --cov-report=html
-```
-
-## Development
-
-```bash
-# Install with dev dependencies
-poetry install
-
-# Format code
-black src/ tests/
-
-# Lint
-ruff src/ tests/
-
-# Type checking
-mypy src/
 ```
 
 ## Dataset
@@ -323,8 +338,8 @@ If you use this work, please cite:
 ```bibtex
 @software{production_rag_eval,
   title = {production-rag-eval: Rigorous RAG System Evaluation},
-  author = {Your Name},
-  year = {2024},
-  url = {https://github.com/yourusername/production-rag-eval}
+  author = {Anshumaan Ravi},
+  year = {2026},
+  url = {https://github.com/anshu-ravi/production-rag-eval}
 }
 ```
